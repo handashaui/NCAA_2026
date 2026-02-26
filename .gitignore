@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# data artifacts
+submission.csv
+data/raw/
+!data/raw/.gitkeep

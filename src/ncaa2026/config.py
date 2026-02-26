@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+@dataclass(frozen=True)
+class EloConfig:
+    k: float = 20.0
+    init: float = 1500.0
+    hca: float = 100.0
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    data_dir: Path
+    output_path: Path
+    model_name: str = "gemini-2.5-flash"
+    current_season: int = 2026
+    elo: EloConfig = EloConfig()
+
+
+
+def load_config(path: str | Path) -> AppConfig:
+    cfg_path = Path(path)
+    with cfg_path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+
+    elo_raw = raw.get("elo", {})
+    elo = EloConfig(
+        k=float(elo_raw.get("k", 20)),
+        init=float(elo_raw.get("init", 1500)),
+        hca=float(elo_raw.get("hca", 100)),
+    )
+
+    return AppConfig(
+        data_dir=Path(raw.get("data_dir", "data/raw/march-machine-learning-mania-2026")),
+        output_path=Path(raw.get("output_path", "submission.csv")),
+        model_name=str(raw.get("model_name", "gemini-2.5-flash")),
+        current_season=int(raw.get("current_season", 2026)),
+        elo=elo,
+    )

@@ -1,0 +1,2 @@
+[console_scripts]
+ncaa2026 = ncaa2026.cli:main

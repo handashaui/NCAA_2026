@@ -1,0 +1,8 @@
+data_dir: data/raw/march-machine-learning-mania-2026
+output_path: submission.csv
+model_name: gemini-2.5-flash
+current_season: 2026
+elo:
+  k: 20
+  init: 1500
+  hca: 100

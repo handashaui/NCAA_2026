@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+src/ncaa2026/__init__.py
+src/ncaa2026/cli.py
+src/ncaa2026/config.py
+src/ncaa2026/pipeline.py
+src/ncaa2026/tools.py
+src/ncaa2026.egg-info/PKG-INFO
+src/ncaa2026.egg-info/SOURCES.txt
+src/ncaa2026.egg-info/dependency_links.txt
+src/ncaa2026.egg-info/entry_points.txt
+src/ncaa2026.egg-info/requires.txt
+src/ncaa2026.egg-info/top_level.txt
+tests/test_smoke_cli.py
