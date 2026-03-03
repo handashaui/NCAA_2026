@@ -8,9 +8,24 @@ import yaml
 
 @dataclass(frozen=True)
 class EloConfig:
+    # Base Elo
     k: float = 20.0
     init: float = 1500.0
     hca: float = 100.0
+
+    # Strength-of-schedule weighting (multiplies K by opponent strength)
+    sos_alpha: float = 0.6
+    sos_min_mult: float = 0.75
+    sos_max_mult: float = 1.25
+
+    # Recency weighting (multiplies K by late-season emphasis)
+    recency_alpha: float = 0.6
+    recency_cutoff: int = 133
+    recency_min_mult: float = 0.80
+    recency_max_mult: float = 1.20
+
+    # Conference-level Elo K (inter-conference regular season games)
+    conf_k: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -22,17 +37,24 @@ class AppConfig:
     elo: EloConfig = EloConfig()
 
 
-
 def load_config(path: str | Path) -> AppConfig:
     cfg_path = Path(path)
     with cfg_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    elo_raw = raw.get("elo", {})
+    elo_raw = raw.get("elo", {}) or {}
     elo = EloConfig(
-        k=float(elo_raw.get("k", 20)),
-        init=float(elo_raw.get("init", 1500)),
-        hca=float(elo_raw.get("hca", 100)),
+        k=float(elo_raw.get("k", 20.0)),
+        init=float(elo_raw.get("init", 1500.0)),
+        hca=float(elo_raw.get("hca", 100.0)),
+        sos_alpha=float(elo_raw.get("sos_alpha", 0.6)),
+        sos_min_mult=float(elo_raw.get("sos_min_mult", 0.75)),
+        sos_max_mult=float(elo_raw.get("sos_max_mult", 1.25)),
+        recency_alpha=float(elo_raw.get("recency_alpha", 0.6)),
+        recency_cutoff=int(elo_raw.get("recency_cutoff", 133)),
+        recency_min_mult=float(elo_raw.get("recency_min_mult", 0.80)),
+        recency_max_mult=float(elo_raw.get("recency_max_mult", 1.20)),
+        conf_k=float(elo_raw.get("conf_k", 10.0)),
     )
 
     return AppConfig(

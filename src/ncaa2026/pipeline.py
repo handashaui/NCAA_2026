@@ -35,7 +35,7 @@ def build_adk_pipeline(state: PipelineState, cfg: AppConfig):
         return compute_elo_ratings(state=state, elo_cfg=cfg.elo)
 
     def tool_train_prediction_model() -> dict[str, Any]:
-        """Train baseline logistic regression on Elo and seed difference."""
+        """Train logistic regression on Elo/seed/conference Elo/boxscores/Massey features."""
         return train_prediction_model(state=state, elo_cfg=cfg.elo)
 
     def tool_generate_submission() -> dict[str, Any]:
