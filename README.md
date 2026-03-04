@@ -48,6 +48,12 @@ export GOOGLE_API_KEY="your-gemini-api-key"
 ncaa2026 run-adk
 ```
 
+### 3) Walk-forward evaluation
+
+```bash
+ncaa2026 evaluate --start 2010 --end 2024 --gender men
+```
+
 ## Notes
 
 - Baseline features: `elo_diff`, `seed_diff`

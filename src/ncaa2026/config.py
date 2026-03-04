@@ -11,6 +11,14 @@ class EloConfig:
     k: float = 20.0
     init: float = 1500.0
     hca: float = 100.0
+    sos_alpha: float = 0.2
+    sos_min_mult: float = 0.8
+    sos_max_mult: float = 1.2
+    recency_alpha: float = 0.3
+    recency_cutoff: int = 133
+    recency_min_mult: float = 0.8
+    recency_max_mult: float = 1.2
+    conf_k: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -33,6 +41,14 @@ def load_config(path: str | Path) -> AppConfig:
         k=float(elo_raw.get("k", 20)),
         init=float(elo_raw.get("init", 1500)),
         hca=float(elo_raw.get("hca", 100)),
+        sos_alpha=float(elo_raw.get("sos_alpha", 0.2)),
+        sos_min_mult=float(elo_raw.get("sos_min_mult", 0.8)),
+        sos_max_mult=float(elo_raw.get("sos_max_mult", 1.2)),
+        recency_alpha=float(elo_raw.get("recency_alpha", 0.3)),
+        recency_cutoff=int(elo_raw.get("recency_cutoff", 133)),
+        recency_min_mult=float(elo_raw.get("recency_min_mult", 0.8)),
+        recency_max_mult=float(elo_raw.get("recency_max_mult", 1.2)),
+        conf_k=float(elo_raw.get("conf_k", 10.0)),
     )
 
     return AppConfig(

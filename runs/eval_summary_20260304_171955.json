@@ -1,0 +1,49 @@
+{
+  "mean_brier": 0.18486292122749504,
+  "std_brier": 0.005576865646174066,
+  "iqr_brier": 0.006265685674030075,
+  "worst_brier": 0.18955875248285345,
+  "brier_by_season": {
+    "2015": 0.18955875248285345,
+    "2016": 0.1770273811347933,
+    "2017": 0.18800263006483842
+  },
+  "n_games_by_season": {
+    "2015": 67,
+    "2016": 67,
+    "2017": 67
+  },
+  "n_evaluated_seasons": 3,
+  "seasons_requested": [
+    2015,
+    2016,
+    2017
+  ],
+  "config": {
+    "data_dir": "data/raw/march-machine-learning-mania-2026",
+    "output_dir": "runs",
+    "season_start": 2015,
+    "season_end": 2017,
+    "gender": "men",
+    "random_seed": 42,
+    "model_type": "logreg",
+    "model_params": {},
+    "elo": {
+      "k": 20.0,
+      "init": 1500.0,
+      "hca": 100.0,
+      "sos_alpha": 0.2,
+      "sos_min_mult": 0.8,
+      "sos_max_mult": 1.2,
+      "recency_alpha": 0.3,
+      "recency_cutoff": 133,
+      "recency_min_mult": 0.8,
+      "recency_max_mult": 1.2,
+      "conf_k": 10.0
+    }
+  },
+  "artifacts": {
+    "eval_results_csv": "runs/eval_results_20260304_171955.csv",
+    "eval_summary_json": "runs/eval_summary_20260304_171955.json"
+  }
+}
