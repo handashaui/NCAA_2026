@@ -18,6 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6.0"]
+boosting = [
+  "xgboost>=2.0",
+  "lightgbm>=4.0",
+  "catboost>=1.2",
+]
 
 [project.scripts]
 ncaa2026 = "ncaa2026.cli:main"
