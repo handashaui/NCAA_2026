@@ -5,6 +5,26 @@ from pathlib import Path
 
 import yaml
 
+ALLOWED_PREDICTION_MODELS = {
+    "linear",
+    "logistic",
+    "boosting",
+    "xgb",
+    "xgboost",
+    "lgbm",
+    "lightgbm",
+    "cat",
+    "catboost",
+}
+
+
+def _normalize_prediction_model(value: str) -> str:
+    model = str(value).strip().lower()
+    if model not in ALLOWED_PREDICTION_MODELS:
+        allowed = ", ".join(sorted(ALLOWED_PREDICTION_MODELS))
+        raise ValueError(f"Invalid prediction_model '{value}'. Allowed values: {allowed}")
+    return model
+
 
 @dataclass(frozen=True)
 class EloConfig:
@@ -33,6 +53,7 @@ class AppConfig:
     data_dir: Path
     output_path: Path
     model_name: str = "gemini-2.5-flash"
+    prediction_model: str = "logistic"
     current_season: int = 2026
     elo: EloConfig = EloConfig()
 
@@ -61,6 +82,7 @@ def load_config(path: str | Path) -> AppConfig:
         data_dir=Path(raw.get("data_dir", "data/raw/march-machine-learning-mania-2026")),
         output_path=Path(raw.get("output_path", "submission.csv")),
         model_name=str(raw.get("model_name", "gemini-2.5-flash")),
+        prediction_model=_normalize_prediction_model(raw.get("prediction_model", "logistic")),
         current_season=int(raw.get("current_season", 2026)),
         elo=elo,
     )
