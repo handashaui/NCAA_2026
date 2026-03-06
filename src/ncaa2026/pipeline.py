@@ -8,7 +8,7 @@ from typing import Any
 from .config import AppConfig
 from .tools import (
     PipelineState,
-    compute_elo_ratings,
+    build_complete_feature_map,
     generate_submission,
     load_competition_data,
     train_prediction_model,
@@ -30,13 +30,13 @@ def build_adk_pipeline(state: PipelineState, cfg: AppConfig):
         """Load all March Madness competition CSV files and return dataset summary."""
         return load_competition_data(state=state, data_dir=cfg.data_dir)
 
-    def tool_compute_elo_ratings() -> dict[str, Any]:
-        """Compute Elo ratings for all teams across seasons using configured hyperparameters."""
-        return compute_elo_ratings(state=state, elo_cfg=cfg.elo)
+    def tool_build_complete_feature_map() -> dict[str, Any]:
+        """Build complete feature map (Elo, seeds, stats, Massey, conference strength)."""
+        return build_complete_feature_map(state=state, elo_cfg=cfg.elo)
 
     def tool_train_prediction_model() -> dict[str, Any]:
-        """Train logistic regression on Elo/seed/conference Elo/boxscores/Massey features."""
-        return train_prediction_model(state=state, elo_cfg=cfg.elo)
+        """Train selected prediction model on Elo/seed/conference Elo/boxscores/Massey features."""
+        return train_prediction_model(state=state, elo_cfg=cfg.elo, model_type=cfg.prediction_model)
 
     def tool_generate_submission() -> dict[str, Any]:
         """Generate submission predictions and write submission.csv."""
@@ -58,9 +58,9 @@ def build_adk_pipeline(state: PipelineState, cfg: AppConfig):
         model=cfg.model_name,
         instruction=(
             "You are a feature engineering specialist. Previous stage: {data_summary}. "
-            "Call `tool_compute_elo_ratings`, report top teams and readiness."
+            "Call `tool_build_complete_feature_map`, report feature map coverage and readiness."
         ),
-        tools=[tool_compute_elo_ratings],
+        tools=[tool_build_complete_feature_map],
         output_key="feature_summary",
     )
 
@@ -69,7 +69,7 @@ def build_adk_pipeline(state: PipelineState, cfg: AppConfig):
         model=cfg.model_name,
         instruction=(
             "You are a model training specialist. Previous stage: {feature_summary}. "
-            "Call `tool_train_prediction_model`, then report Brier score and coefficients."
+            "Call `tool_train_prediction_model`, then report Brier score and key model signals."
         ),
         tools=[tool_train_prediction_model],
         output_key="model_summary",
@@ -120,7 +120,7 @@ async def run_adk_pipeline(state: PipelineState, cfg: AppConfig) -> list[dict[st
             Part(
                 text=(
                     "Run the full March Madness prediction pipeline: load data, compute features, "
-                    "train the model, and generate submission."
+                    f"train the {cfg.prediction_model} model, and generate submission."
                 )
             )
         ],

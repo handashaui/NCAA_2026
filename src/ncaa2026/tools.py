@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GroupKFold, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.base import BaseEstimator
+try:
+    from xgboost import XGBClassifier
+except ImportError:
+    XGBClassifier = None
+
+try:
+    from lightgbm import LGBMClassifier
+except ImportError:
+    LGBMClassifier = None
+
+try:
+    from catboost import CatBoostClassifier
+except ImportError:
+    CatBoostClassifier = None
 
 from .config import EloConfig
 
@@ -51,6 +67,140 @@ REQUIRED_FILES = [
 
 MASSEY_SYSTEMS = ["POM", "SAG", "RPI"]
 MASSEY_MAX_DAY = 133
+PREDICTION_MODEL_ALIASES = {
+    "linear": "logistic",
+    "logistic": "logistic",
+    "boosting": "boosting",
+    "xgb": "xgboost",
+    "xgboost": "xgboost",
+    "lgbm": "lightgbm",
+    "lightgbm": "lightgbm",
+    "cat": "catboost",
+    "catboost": "catboost",
+}
+
+
+def _normalize_model_type(model_type: str) -> str:
+    normalized = PREDICTION_MODEL_ALIASES.get(str(model_type).strip().lower())
+    if normalized is None:
+        allowed = ", ".join(sorted(PREDICTION_MODEL_ALIASES))
+        raise ValueError(f"Unsupported model_type '{model_type}'. Allowed values: {allowed}")
+    return normalized
+
+
+def _require_optional_model(name: str, model_cls: Any, install_hint: str) -> None:
+    if model_cls is not None:
+        return
+    raise RuntimeError(f"{name} is not installed. Install it first, e.g. `{install_hint}`.")
+
+
+def _build_classifier(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
+    if model_type == "logistic":
+        return (
+            make_pipeline(
+                StandardScaler(),
+                LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000),
+            ),
+            make_pipeline(
+                StandardScaler(),
+                LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000),
+            ),
+        )
+
+    if model_type == "boosting":
+        return (
+            GradientBoostingClassifier(
+                n_estimators=300,
+                learning_rate=0.05,
+                max_depth=3,
+                subsample=0.8,
+                random_state=42,
+            ),
+            GradientBoostingClassifier(
+                n_estimators=300,
+                learning_rate=0.05,
+                max_depth=3,
+                subsample=0.8,
+                random_state=42,
+            ),
+        )
+
+    if model_type == "xgboost":
+        _require_optional_model("XGBoost", XGBClassifier, "pip install xgboost")
+        return (
+            XGBClassifier(
+                n_estimators=400,
+                learning_rate=0.05,
+                max_depth=4,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=1.0,
+                objective="binary:logistic",
+                eval_metric="logloss",
+                random_state=42,
+                n_jobs=-1,
+            ),
+            XGBClassifier(
+                n_estimators=400,
+                learning_rate=0.05,
+                max_depth=4,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_lambda=1.0,
+                objective="binary:logistic",
+                eval_metric="logloss",
+                random_state=42,
+                n_jobs=-1,
+            ),
+        )
+
+    if model_type == "lightgbm":
+        _require_optional_model("LightGBM", LGBMClassifier, "pip install lightgbm")
+        return (
+            LGBMClassifier(
+                n_estimators=400,
+                learning_rate=0.05,
+                num_leaves=31,
+                max_depth=-1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+            ),
+            LGBMClassifier(
+                n_estimators=400,
+                learning_rate=0.05,
+                num_leaves=31,
+                max_depth=-1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+            ),
+        )
+
+    if model_type == "catboost":
+        _require_optional_model("CatBoost", CatBoostClassifier, "pip install catboost")
+        return (
+            CatBoostClassifier(
+                iterations=500,
+                learning_rate=0.05,
+                depth=6,
+                loss_function="Logloss",
+                eval_metric="Logloss",
+                random_seed=42,
+                verbose=False,
+            ),
+            CatBoostClassifier(
+                iterations=500,
+                learning_rate=0.05,
+                depth=6,
+                loss_function="Logloss",
+                eval_metric="Logloss",
+                random_seed=42,
+                verbose=False,
+            ),
+        )
+
+    raise ValueError(f"Unexpected resolved model type: {model_type}")
 
 
 def _parse_seed(seed_str: str) -> int:
@@ -120,7 +270,7 @@ def load_competition_data(state: PipelineState, data_dir: str | Path) -> dict[st
 
 
 # ══════════════════════════════
-# TOOL 2: Elo ratings (with SoS + recency multipliers)
+# TOOL 2: Build complete feature map (Elo + derived feature tables)
 # ══════════════════════════════
 
 def _run_elo(
@@ -196,7 +346,7 @@ def _run_elo(
     return season_elos
 
 
-def compute_elo_ratings(state: PipelineState, elo_cfg: EloConfig) -> dict[str, Any]:
+def build_complete_feature_map(state: PipelineState, elo_cfg: EloConfig) -> dict[str, Any]:
     if not state.data:
         raise RuntimeError("Data not loaded. Call load_competition_data first.")
 
@@ -207,10 +357,23 @@ def compute_elo_ratings(state: PipelineState, elo_cfg: EloConfig) -> dict[str, A
     state.elo.update(m_elos)
     state.elo.update(w_elos)
 
+    _ensure_derived_feature_tables(state, elo_cfg)
+
+    seed_map = state.data.get("seed_map", {})
+    m_massey_feats = state.data.get("m_massey_feats")
+    massey_cols = [c for c in m_massey_feats.columns if c.startswith("massey_")] if m_massey_feats is not None else []
+
     return {
         "status": "success",
         "ratings_computed": int(len(state.elo)),
-        "message": "Elo computed for men and women (end-of-season snapshots).",
+        "m_team_stats_rows": int(len(state.data.get("m_team_stats", []))),
+        "w_team_stats_rows": int(len(state.data.get("w_team_stats", []))),
+        "m_massey_rows": int(len(m_massey_feats)) if m_massey_feats is not None else 0,
+        "m_massey_feature_cols": int(len(massey_cols)),
+        "m_team_conf_strength_rows": int(len(state.data.get("m_team_conf_strength", []))),
+        "w_team_conf_strength_rows": int(len(state.data.get("w_team_conf_strength", []))),
+        "seed_map_size": int(len(seed_map)),
+        "message": "Complete feature map built and cached for model training/submission.",
     }
 
 
@@ -422,6 +585,15 @@ def build_team_conference_strength(
     return tc[["Season", "TeamID", "conf_elo"]]
 
 
+def build_seed_map(m_seeds_df: pd.DataFrame, w_seeds_df: pd.DataFrame) -> dict[tuple[int, int], int]:
+    """Build (Season, TeamID) -> numeric seed lookup from men/women seed tables."""
+    seed_map: dict[tuple[int, int], int] = {}
+    for df in [m_seeds_df, w_seeds_df]:
+        for _, row in df.iterrows():
+            seed_map[(int(row["Season"]), int(row["TeamID"]))] = _parse_seed(str(row["Seed"]))
+    return seed_map
+
+
 def _ensure_derived_feature_tables(state: PipelineState, elo_cfg: EloConfig) -> None:
     """Compute and cache feature tables used by Tool 3/4."""
     if "m_team_stats" not in state.data:
@@ -450,24 +622,30 @@ def _ensure_derived_feature_tables(state: PipelineState, elo_cfg: EloConfig) -> 
             state.data["w_team_conf"], state.data["w_conf_elo_by_season"], init=float(elo_cfg.init)
         )
 
+    if "seed_map" not in state.data:
+        state.data["seed_map"] = build_seed_map(state.data["m_seeds"], state.data["w_seeds"])
+
 
 # ══════════════════════════════
 # TOOL 3: Train prediction model (Elo + Seed + ConfElo + Boxscores + Massey)
 # ══════════════════════════════
 
-def train_prediction_model(state: PipelineState, elo_cfg: EloConfig) -> dict[str, Any]:
+def train_prediction_model(
+    state: PipelineState,
+    elo_cfg: EloConfig,
+    model_type: str = "logistic",
+) -> dict[str, Any]:
     if not state.data:
         raise RuntimeError("Data not loaded. Call load_competition_data first.")
     if not state.elo:
-        raise RuntimeError("Elo not computed. Call compute_elo_ratings first.")
+        raise RuntimeError("Feature map not built. Call build_complete_feature_map first.")
 
     _ensure_derived_feature_tables(state, elo_cfg)
 
     # Seed lookup for ALL seasons (not just current)
-    seed_map: dict[tuple[int, int], int] = {}
-    for df in [state.data["m_seeds"], state.data["w_seeds"]]:
-        for _, row in df.iterrows():
-            seed_map[(int(row["Season"]), int(row["TeamID"]))] = _parse_seed(str(row["Seed"]))
+    seed_map = state.data.get("seed_map")
+    if not isinstance(seed_map, dict):
+        raise RuntimeError("Missing derived seed_map. Call build_complete_feature_map first.")
 
     massey_df = state.data.get("m_massey_feats")
     massey_cols = [c for c in massey_df.columns if c.startswith("massey_")]
@@ -475,6 +653,7 @@ def train_prediction_model(state: PipelineState, elo_cfg: EloConfig) -> dict[str
 
     X: list[list[float]] = []
     y: list[int] = []
+    season_groups: list[int] = []
     feature_names: list[str] | None = None
 
     for t_df, stats_df, conf_df, is_men in [
@@ -549,6 +728,7 @@ def train_prediction_model(state: PipelineState, elo_cfg: EloConfig) -> dict[str
                     feats += list(w_m - l_m)
                 X.append(feats)
                 y.append(1)
+                season_groups.append(season)
             else:
                 feats = [
                     l_elo - w_elo,
@@ -560,44 +740,88 @@ def train_prediction_model(state: PipelineState, elo_cfg: EloConfig) -> dict[str
                     feats += list(l_m - w_m)
                 X.append(feats)
                 y.append(0)
+                season_groups.append(season)
 
     x_mat = np.asarray(X, dtype=float)
     y_vec = np.asarray(y, dtype=int)
+    season_vec = np.asarray(season_groups, dtype=int)
     x_mat = np.nan_to_num(x_mat, nan=0.0, posinf=0.0, neginf=0.0)
     if len(y_vec) == 0:
         raise RuntimeError("No training rows were built from tournament data.")
+    if len(season_vec) != len(y_vec):
+        raise RuntimeError("Season group length mismatch while building training rows.")
 
-    # Scale + LogisticRegression in one pipeline
-    model = make_pipeline(
-        StandardScaler(),
-        LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000)
-    )
+    resolved_model = _normalize_model_type(model_type)
+    model, cv_model = _build_classifier(resolved_model)
+
     model.fit(x_mat, y_vec)
 
-    # Cross-val on the same scaled pipeline (each fold scales using only train fold)
-    cv_model = make_pipeline(
-        StandardScaler(),
-        LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000)
-    )
-    cv_probs = cross_val_score(
-        cv_model, x_mat, y_vec,
-        scoring="neg_brier_score", cv=5
-    )
+    unique_seasons = np.unique(season_vec)
+    if len(unique_seasons) >= 2:
+        n_splits = min(5, int(len(unique_seasons)))
+        cv_strategy = f"groupkfold_season_{n_splits}"
+        cv_probs = cross_val_score(
+            cv_model,
+            x_mat,
+            y_vec,
+            scoring="neg_brier_score",
+            cv=GroupKFold(n_splits=n_splits),
+            groups=season_vec,
+        )
+    else:
+        n_splits = min(5, int(len(y_vec)))
+        if n_splits < 2:
+            raise RuntimeError("Need at least 2 training rows for cross-validation.")
+        cv_strategy = f"stratified_kfold_{n_splits}_fallback"
+        cv_probs = cross_val_score(
+            cv_model,
+            x_mat,
+            y_vec,
+            scoring="neg_brier_score",
+            cv=n_splits,
+        )
     brier = -cv_probs.mean()
 
     state.model = model
-    lr = model.named_steps["logisticregression"]
-    coef_map = {name: float(val) for name, val in zip(state.feature_names, lr.coef_[0])}
-    return {
-    "status": "success",
-    "training_games": int(len(y_vec)),
-    "win_rate_label1": f"{y_vec.mean():.3f}",
-    "cv_brier_score": f"{brier:.4f}",
-    "num_features": int(x_mat.shape[1]),
-    "coefficients": {k: f"{v:.6f}" for k, v in coef_map.items()},
-    "intercept": f"{float(lr.intercept_[0]):.6f}",
-    "message": f"Model trained on {len(y_vec)} games. CV Brier: {brier:.4f}",
-}
+    summary: dict[str, Any] = {
+        "status": "success",
+        "model_type": resolved_model,
+        "training_games": int(len(y_vec)),
+        "training_seasons": int(len(unique_seasons)),
+        "win_rate_label1": f"{y_vec.mean():.3f}",
+        "cv_strategy": cv_strategy,
+        "cv_brier_score": f"{brier:.4f}",
+        "num_features": int(x_mat.shape[1]),
+    }
+
+    if resolved_model == "logistic":
+        lr = model.named_steps["logisticregression"]
+        coef_map = {
+            name: float(val)
+            for name, val in zip(state.feature_names, lr.coef_[0], strict=True)
+        }
+        summary["coefficients"] = {k: f"{v:.6f}" for k, v in coef_map.items()}
+        summary["intercept"] = f"{float(lr.intercept_[0]):.6f}"
+    else:
+        importances = {
+            name: float(val)
+            for name, val in zip(
+                state.feature_names,
+                model.feature_importances_,
+                strict=True,
+            )
+        }
+        top_importances = sorted(
+            importances.items(),
+            key=lambda item: abs(item[1]),
+            reverse=True,
+        )[:15]
+        summary["feature_importances"] = {k: f"{v:.6f}" for k, v in top_importances}
+
+    summary["message"] = (
+        f"Model ({resolved_model}) trained on {len(y_vec)} games. CV Brier: {brier:.4f}"
+    )
+    return summary
 
 
 # ══════════════════════════════
@@ -613,10 +837,9 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
     sub = state.data["sample_sub"].copy()
 
     # Seed lookup for ALL seasons
-    seed_map: dict[tuple[int, int], int] = {}
-    for df in [state.data["m_seeds"], state.data["w_seeds"]]:
-        for _, row in df.iterrows():
-            seed_map[(int(row["Season"]), int(row["TeamID"]))] = _parse_seed(str(row["Seed"]))
+    seed_map = state.data.get("seed_map")
+    if not isinstance(seed_map, dict):
+        raise RuntimeError("Missing derived seed_map. Call build_complete_feature_map first.")
 
     m_team_ids = set(state.data["m_teams"]["TeamID"].astype(int).tolist())
     w_team_ids = set(state.data["w_teams"]["TeamID"].astype(int).tolist())
@@ -716,10 +939,11 @@ def run_local_pipeline(
     data_dir: str | Path,
     output_path: str | Path,
     elo_cfg: EloConfig,
+    model_type: str = "logistic",
 ) -> dict[str, Any]:
     load_summary = load_competition_data(state, data_dir)
-    feat_summary = compute_elo_ratings(state, elo_cfg)
-    model_summary = train_prediction_model(state, elo_cfg)
+    feat_summary = build_complete_feature_map(state, elo_cfg)
+    model_summary = train_prediction_model(state, elo_cfg, model_type=model_type)
     sub_summary = generate_submission(state, output_path, elo_cfg)
 
     return {
