@@ -61,6 +61,12 @@ ncaa2026 run-adk
 ncaa2026 run-adk --prediction-model boosting
 ```
 
+### 3) Walk-forward evaluation
+
+```bash
+ncaa2026 evaluate --start 2010 --end 2024 --gender men
+```
+
 ## Notes
 
 - Baseline features: `elo_diff`, `seed_diff`
