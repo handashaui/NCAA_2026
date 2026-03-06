@@ -11,7 +11,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GroupKFold, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -642,6 +642,7 @@ def train_prediction_model(
 
     X: list[list[float]] = []
     y: list[int] = []
+    season_groups: list[int] = []
     feature_names: list[str] | None = None
 
     for t_df, stats_df, conf_df, is_men in [
@@ -716,6 +717,7 @@ def train_prediction_model(
                     feats += list(w_m - l_m)
                 X.append(feats)
                 y.append(1)
+                season_groups.append(season)
             else:
                 feats = [
                     l_elo - w_elo,
@@ -727,22 +729,46 @@ def train_prediction_model(
                     feats += list(l_m - w_m)
                 X.append(feats)
                 y.append(0)
+                season_groups.append(season)
 
     x_mat = np.asarray(X, dtype=float)
     y_vec = np.asarray(y, dtype=int)
+    season_vec = np.asarray(season_groups, dtype=int)
     x_mat = np.nan_to_num(x_mat, nan=0.0, posinf=0.0, neginf=0.0)
     if len(y_vec) == 0:
         raise RuntimeError("No training rows were built from tournament data.")
+    if len(season_vec) != len(y_vec):
+        raise RuntimeError("Season group length mismatch while building training rows.")
 
     resolved_model = _normalize_model_type(model_type)
     model, cv_model = _build_classifier(resolved_model)
 
     model.fit(x_mat, y_vec)
 
-    cv_probs = cross_val_score(
-        cv_model, x_mat, y_vec,
-        scoring="neg_brier_score", cv=5
-    )
+    unique_seasons = np.unique(season_vec)
+    if len(unique_seasons) >= 2:
+        n_splits = min(5, int(len(unique_seasons)))
+        cv_strategy = f"groupkfold_season_{n_splits}"
+        cv_probs = cross_val_score(
+            cv_model,
+            x_mat,
+            y_vec,
+            scoring="neg_brier_score",
+            cv=GroupKFold(n_splits=n_splits),
+            groups=season_vec,
+        )
+    else:
+        n_splits = min(5, int(len(y_vec)))
+        if n_splits < 2:
+            raise RuntimeError("Need at least 2 training rows for cross-validation.")
+        cv_strategy = f"stratified_kfold_{n_splits}_fallback"
+        cv_probs = cross_val_score(
+            cv_model,
+            x_mat,
+            y_vec,
+            scoring="neg_brier_score",
+            cv=n_splits,
+        )
     brier = -cv_probs.mean()
 
     state.model = model
@@ -750,7 +776,9 @@ def train_prediction_model(
         "status": "success",
         "model_type": resolved_model,
         "training_games": int(len(y_vec)),
+        "training_seasons": int(len(unique_seasons)),
         "win_rate_label1": f"{y_vec.mean():.3f}",
+        "cv_strategy": cv_strategy,
         "cv_brier_score": f"{brier:.4f}",
         "num_features": int(x_mat.shape[1]),
     }
