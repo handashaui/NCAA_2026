@@ -3,7 +3,7 @@
 This repo is a clean starter based on the ADK notebook baseline:
 - Data Loader Agent
 - Feature Engineer Agent (Elo)
-- Model Trainer Agent (Logistic Regression)
+- Model Trainer Agent (Logistic Regression or Boosting)
 - Submission Agent
 
 The agents are orchestrated with `SequentialAgent` from Google ADK.
@@ -23,6 +23,8 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -U pip
 pip install -e ".[dev]"
+# optional: add third-party boosting libraries
+pip install -e ".[dev,boosting]"
 ```
 
 ## Data
@@ -39,6 +41,14 @@ Expected files are listed in [data/README.md](data/README.md).
 
 ```bash
 ncaa2026 run-local
+
+# choose boosting instead of linear/logistic model
+ncaa2026 run-local --prediction-model boosting
+
+# use third-party gradient boosting models
+ncaa2026 run-local --prediction-model xgboost
+ncaa2026 run-local --prediction-model lightgbm
+ncaa2026 run-local --prediction-model catboost
 ```
 
 ### 2) ADK SequentialAgent pipeline
@@ -46,6 +56,9 @@ ncaa2026 run-local
 ```bash
 export GOOGLE_API_KEY="your-gemini-api-key"
 ncaa2026 run-adk
+
+# or override model in ADK pipeline run
+ncaa2026 run-adk --prediction-model boosting
 ```
 
 ### 3) Walk-forward evaluation
@@ -57,5 +70,8 @@ ncaa2026 evaluate --start 2010 --end 2024 --gender men
 ## Notes
 
 - Baseline features: `elo_diff`, `seed_diff`
-- Baseline model: `LogisticRegression`
+- Prediction model can be set in `configs/default.yaml` via `prediction_model`
+- Supported values include:
+  - `linear`, `logistic`, `boosting`
+  - `xgboost`, `lightgbm`, `catboost`
 - Output file defaults to `submission.csv`

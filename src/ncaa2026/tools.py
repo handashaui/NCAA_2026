@@ -14,20 +14,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-try:
-    from xgboost import XGBClassifier
-except ImportError:
-    XGBClassifier = None
-
-try:
-    from lightgbm import LGBMClassifier
-except ImportError:
-    LGBMClassifier = None
-
-try:
-    from catboost import CatBoostClassifier
-except ImportError:
-    CatBoostClassifier = None
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from catboost import CatBoostClassifier
 
 from .config import EloConfig
 
