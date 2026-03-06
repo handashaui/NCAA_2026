@@ -11,3 +11,11 @@ __pycache__/
 submission.csv
 data/raw/
 !data/raw/.gitkeep
+
+# experiment artifacts
+runs/
+catboost_info/
+
+# packaging artifacts
+*.egg-info/
+src/*.egg-info/
