@@ -86,6 +86,10 @@ def test_compute_team_season_boxscores_aggregates_winner_and_loser_rows() -> Non
             "stat_stl",
             "stat_blk",
             "stat_pf",
+            "stat_efg_pct",
+            "stat_tov_pct",
+            "stat_orb_pct",
+            "stat_ft_rate",
         ]
     )
 
@@ -95,6 +99,13 @@ def test_compute_team_season_boxscores_aggregates_winner_and_loser_rows() -> Non
     assert np.isclose(team1["stat_ft_pct"], (0.5 + 0.7) / 2.0)
     assert np.isclose(team1["stat_tr"], (30 + 26) / 2.0)
     assert np.isclose(team1["stat_to"], (12 + 13) / 2.0)
+    assert np.isclose(team1["stat_efg_pct"], ((20 + 0.5 * 5) / 40 + (16 + 0.5 * 3) / 40) / 2.0)
+    assert np.isclose(
+        team1["stat_tov_pct"],
+        ((12 / (40 + 0.44 * 20 + 12)) + (13 / (40 + 0.44 * 10 + 13))) / 2.0,
+    )
+    assert np.isclose(team1["stat_orb_pct"], ((8 / (8 + 20)) + (7 / (7 + 25))) / 2.0)
+    assert np.isclose(team1["stat_ft_rate"], ((20 / 40) + (10 / 40)) / 2.0)
 
     # WAst/WStl/WBlk/WPF + L* variants are intentionally missing, so defaults should be zero.
     assert np.isclose(team1["stat_ast"], 0.0)

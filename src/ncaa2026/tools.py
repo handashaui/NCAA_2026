@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +15,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold, cross_val_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-from catboost import CatBoostClassifier
+try:
+    from xgboost import XGBClassifier
+except ImportError:  # pragma: no cover - optional dependency
+    XGBClassifier = None
+
+try:
+    from lightgbm import LGBMClassifier
+except ImportError:  # pragma: no cover - optional dependency
+    LGBMClassifier = None
+
+try:
+    from catboost import CatBoostClassifier
+except ImportError:  # pragma: no cover - optional dependency
+    CatBoostClassifier = None
 
 from .config import EloConfig
 
@@ -29,6 +41,8 @@ class PipelineState:
 
     # Saved so Tool 4 can build the identical feature vector order as Tool 3
     feature_names: list[str] = field(default_factory=list)
+    available_feature_names: list[str] = field(default_factory=list)
+    selected_feature_indices: list[int] = field(default_factory=list)
     massey_cols: list[str] = field(default_factory=list)
     m_stat_cols: list[str] = field(default_factory=list)
     w_stat_cols: list[str] = field(default_factory=list)
@@ -56,6 +70,66 @@ REQUIRED_FILES = [
 
 MASSEY_SYSTEMS = ["POM", "SAG", "RPI"]
 MASSEY_MAX_DAY = 133
+SEED_FEATURE_COLS = [
+    "Seed_Num",
+    "Seed_Strength",
+    "Seed_Tier_Elite",
+    "Seed_Tier_Contender",
+    "Seed_Tier_Mid",
+    "Seed_Tier_Low",
+    "Seed_Value",
+    "Seed_Squared",
+    "Seed_Percentile",
+]
+SEED_MATCHUP_FEATURE_COLS = [
+    "Seed_Num_Diff",
+    "Seed_Strength_Diff",
+    "Seed_Value_Diff",
+    "Seed_Num_Ratio",
+    "Seed_Strength_Ratio",
+    "Seed_Value_Ratio",
+    "Seed_Num_Product",
+    "Seed_Strength_Product",
+    "Seed_Sum",
+    "Same_Tier_Elite",
+    "Same_Tier_Low",
+    "Tier_Gap",
+]
+MODEL_FEATURE_SELECTION = [
+    "elo_diff",
+    # "Seed_Num_Diff",
+    "Seed_Strength_Diff",
+    "Seed_Value_Diff",
+    "Seed_Num_Ratio",
+    # "Seed_Strength_Ratio",
+    # "Seed_Value_Ratio",
+    # "Seed_Num_Product",
+    # "Seed_Strength_Product",
+    # "Seed_Sum",
+    # "Same_Tier_Elite",
+    # "Same_Tier_Low",
+    # "Tier_Gap",
+    "conf_elo_diff",
+    # "diff_stat_ast",
+    # "diff_stat_blk",
+    # "diff_stat_dr",
+    "diff_stat_efg_pct",
+    # "diff_stat_fg3_pct",
+    # "diff_stat_fg_pct",
+    # "diff_stat_ft_pct",
+    "diff_stat_ft_rate",
+    # "diff_stat_or",
+    # "diff_stat_orb_pct",
+    # "diff_stat_pf",
+    # "diff_stat_stl",
+    # "diff_stat_to",
+    # "diff_stat_tov_pct",
+    # "diff_stat_tr",
+    # "diff_massey_mean",
+    # "diff_massey_pom",
+    # "diff_massey_rpi",
+    # "diff_massey_sag",
+]
 PREDICTION_MODEL_ALIASES = {
     "linear": "logistic",
     "logistic": "logistic",
@@ -201,6 +275,121 @@ def _parse_seed(seed_str: str) -> int:
     if not match:
         return 8
     return int(match.group(1))
+
+
+def _seed_num_to_features(seed_num: int) -> dict[str, float]:
+    """Notebook-style per-team seed features from numeric seed."""
+    s = float(seed_num)
+    return {
+        "Seed_Num": s,
+        "Seed_Strength": 17.0 - s,
+        "Seed_Tier_Elite": float(seed_num <= 4),
+        "Seed_Tier_Contender": float(5 <= seed_num <= 8),
+        "Seed_Tier_Mid": float(9 <= seed_num <= 12),
+        "Seed_Tier_Low": float(seed_num >= 13),
+        "Seed_Value": 1.0 / s,
+        "Seed_Squared": s**2,
+        "Seed_Percentile": (17.0 - s) / 16.0,
+    }
+
+
+def _default_seed_features() -> dict[str, float]:
+    """Notebook-compatible missing-value defaults used when seed is unavailable."""
+    return {
+        "Seed_Num": 16.0,
+        "Seed_Strength": 1.0,
+        "Seed_Tier_Elite": 0.0,
+        "Seed_Tier_Contender": 0.0,
+        "Seed_Tier_Mid": 0.0,
+        "Seed_Tier_Low": 0.0,
+        "Seed_Value": 1.0 / 16.0,
+        # The notebook fill loop puts Seed_Squared into the catch-all branch -> 0.
+        "Seed_Squared": 0.0,
+        "Seed_Percentile": 1.0 / 16.0,
+    }
+
+
+def _get_seed_features(
+    seed_feature_map: dict[tuple[int, int], dict[str, float] | int | float],
+    season: int,
+    team_id: int,
+) -> dict[str, float]:
+    raw = seed_feature_map.get((season, team_id))
+    if raw is None:
+        return _default_seed_features()
+
+    if isinstance(raw, dict):
+        out = _default_seed_features()
+        for c in SEED_FEATURE_COLS:
+            v = raw.get(c)
+            if v is not None and pd.notna(v):
+                out[c] = float(v)
+        return out
+
+    return _seed_num_to_features(int(raw))
+
+
+def _build_seed_matchup_features(
+    team1_seed: dict[str, float],
+    team2_seed: dict[str, float],
+) -> list[float]:
+    t1_num = team1_seed["Seed_Num"]
+    t2_num = team2_seed["Seed_Num"]
+    t1_strength = team1_seed["Seed_Strength"]
+    t2_strength = team2_seed["Seed_Strength"]
+    t1_value = team1_seed["Seed_Value"]
+    t2_value = team2_seed["Seed_Value"]
+    t1_elite = team1_seed["Seed_Tier_Elite"]
+    t2_elite = team2_seed["Seed_Tier_Elite"]
+    t1_low = team1_seed["Seed_Tier_Low"]
+    t2_low = team2_seed["Seed_Tier_Low"]
+
+    return [
+        t1_num - t2_num,
+        t1_strength - t2_strength,
+        t1_value - t2_value,
+        t1_num / (t2_num + 1.0),
+        t1_strength / (t2_strength + 1.0),
+        t1_value / (t2_value + 1e-6),
+        t1_num * t2_num,
+        t1_strength * t2_strength,
+        t1_num + t2_num,
+        float((t1_elite == 1.0) and (t2_elite == 1.0)),
+        float((t1_low == 1.0) and (t2_low == 1.0)),
+        abs(t1_elite - t2_elite),
+    ]
+
+
+def _resolve_feature_selection(
+    all_feature_names: list[str],
+    selected_patterns: list[str],
+) -> tuple[list[str], list[int]]:
+    """Resolve explicit names/wildcards to ordered feature names and indices."""
+    if not selected_patterns:
+        return all_feature_names, list(range(len(all_feature_names)))
+
+    resolved: list[str] = []
+    for pattern in selected_patterns:
+        has_wildcard = any(ch in pattern for ch in ["*", "?", "["])
+        if has_wildcard:
+            matches = [name for name in all_feature_names if fnmatch(name, pattern)]
+            if not matches:
+                raise ValueError(f"Feature pattern '{pattern}' matched no features.")
+            for name in matches:
+                if name not in resolved:
+                    resolved.append(name)
+            continue
+
+        if pattern not in all_feature_names:
+            raise ValueError(f"Feature '{pattern}' not found in available features.")
+        if pattern not in resolved:
+            resolved.append(pattern)
+
+    if not resolved:
+        raise ValueError("No features selected. Update MODEL_FEATURE_SELECTION.")
+
+    indices = [all_feature_names.index(name) for name in resolved]
+    return resolved, indices
 
 
 def _compact_file_summary(df: pd.DataFrame) -> str:
@@ -374,6 +563,7 @@ def compute_team_season_boxscores(detailed_df: pd.DataFrame) -> pd.DataFrame:
     """Compute per-season per-team average boxscore stats.
 
     Mirrors the notebook: FG%, 3P%, FT%, OR/DR/TR, TO, Ast, Stl, Blk, PF.
+    Adds Four Factors: eFG%, TOV%, ORB%, FT rate.
     """
     df = detailed_df.copy()
     eps = 1e-9
@@ -390,6 +580,7 @@ def compute_team_season_boxscores(detailed_df: pd.DataFrame) -> pd.DataFrame:
             "FGM3": df["WFGM3"], "FGA3": df["WFGA3"],
             "FTM": df["WFTM"], "FTA": df["WFTA"],
             "OR": df["WOR"], "DR": df["WDR"],
+            "OppDR": df["LDR"],
             "TO": df["WTO"],
             "Ast": extract_column("WAst"),
             "Stl": extract_column("WStl"),
@@ -406,6 +597,7 @@ def compute_team_season_boxscores(detailed_df: pd.DataFrame) -> pd.DataFrame:
             "FGM3": df["LFGM3"], "FGA3": df["LFGA3"],
             "FTM": df["LFTM"], "FTA": df["LFTA"],
             "OR": df["LOR"], "DR": df["LDR"],
+            "OppDR": df["WDR"],
             "TO": df["LTO"],
             "Ast": extract_column("LAst"),
             "Stl": extract_column("LStl"),
@@ -419,8 +611,28 @@ def compute_team_season_boxscores(detailed_df: pd.DataFrame) -> pd.DataFrame:
     g["FG3_PCT"] = g["FGM3"] / (g["FGA3"] + eps)
     g["FT_PCT"] = g["FTM"] / (g["FTA"] + eps)
     g["TR"] = g["OR"] + g["DR"]
+    g["EFG_PCT"] = (g["FGM"] + 0.5 * g["FGM3"]) / (g["FGA"] + eps)
+    g["TOV_PCT"] = g["TO"] / (g["FGA"] + 0.44 * g["FTA"] + g["TO"] + eps)
+    g["ORB_PCT"] = g["OR"] / (g["OR"] + g["OppDR"] + eps)
+    g["FT_RATE"] = g["FTA"] / (g["FGA"] + eps)
 
-    agg_cols = ["FG_PCT", "FG3_PCT", "FT_PCT", "OR", "DR", "TR", "TO", "Ast", "Stl", "Blk", "PF"]
+    agg_cols = [
+        "FG_PCT",
+        "FG3_PCT",
+        "FT_PCT",
+        "OR",
+        "DR",
+        "TR",
+        "TO",
+        "Ast",
+        "Stl",
+        "Blk",
+        "PF",
+        "EFG_PCT",
+        "TOV_PCT",
+        "ORB_PCT",
+        "FT_RATE",
+    ]
 
     out = (
     g.groupby(["Season", "TeamID"], as_index=False)[agg_cols]
@@ -583,6 +795,21 @@ def build_seed_map(m_seeds_df: pd.DataFrame, w_seeds_df: pd.DataFrame) -> dict[t
     return seed_map
 
 
+def build_seed_feature_map(
+    m_seeds_df: pd.DataFrame,
+    w_seeds_df: pd.DataFrame,
+) -> dict[tuple[int, int], dict[str, float]]:
+    """Build (Season, TeamID) -> engineered notebook-style seed features."""
+    out: dict[tuple[int, int], dict[str, float]] = {}
+    for df in [m_seeds_df, w_seeds_df]:
+        for _, row in df.iterrows():
+            season = int(row["Season"])
+            team_id = int(row["TeamID"])
+            seed_num = _parse_seed(str(row["Seed"]))
+            out[(season, team_id)] = _seed_num_to_features(seed_num)
+    return out
+
+
 def _ensure_derived_feature_tables(state: PipelineState, elo_cfg: EloConfig) -> None:
     """Compute and cache feature tables used by Tool 3/4."""
     if "m_team_stats" not in state.data:
@@ -613,6 +840,10 @@ def _ensure_derived_feature_tables(state: PipelineState, elo_cfg: EloConfig) -> 
 
     if "seed_map" not in state.data:
         state.data["seed_map"] = build_seed_map(state.data["m_seeds"], state.data["w_seeds"])
+    if "seed_feature_map" not in state.data:
+        state.data["seed_feature_map"] = build_seed_feature_map(
+            state.data["m_seeds"], state.data["w_seeds"]
+        )
 
 
 # ══════════════════════════════
@@ -623,6 +854,7 @@ def train_prediction_model(
     state: PipelineState,
     elo_cfg: EloConfig,
     model_type: str = "logistic",
+    show_progress: bool = True,
 ) -> dict[str, Any]:
     if not state.data:
         raise RuntimeError("Data not loaded. Call load_competition_data first.")
@@ -631,10 +863,10 @@ def train_prediction_model(
 
     _ensure_derived_feature_tables(state, elo_cfg)
 
-    # Seed lookup for ALL seasons (not just current)
-    seed_map = state.data.get("seed_map")
-    if not isinstance(seed_map, dict):
-        raise RuntimeError("Missing derived seed_map. Call build_complete_feature_map first.")
+    # Seed feature lookup for ALL seasons (not just current)
+    seed_feature_map = state.data.get("seed_feature_map")
+    if not isinstance(seed_feature_map, dict):
+        raise RuntimeError("Missing derived seed_feature_map. Call build_complete_feature_map first.")
 
     massey_df = state.data.get("m_massey_feats")
     massey_cols = [c for c in massey_df.columns if c.startswith("massey_")]
@@ -644,6 +876,7 @@ def train_prediction_model(
     y: list[int] = []
     season_groups: list[int] = []
     feature_names: list[str] | None = None
+    selected_feature_indices: list[int] | None = None
 
     for t_df, stats_df, conf_df, is_men in [
         (state.data["m_tourney"], state.data["m_team_stats"], state.data["m_team_conf_strength"], True),
@@ -655,12 +888,18 @@ def train_prediction_model(
 
         # Define feature names once (exact order)
         if feature_names is None:
-            feature_names = (
-                ["elo_diff", "seed_diff", "conf_elo_diff"]
+            all_feature_names = (
+                ["elo_diff"] + SEED_MATCHUP_FEATURE_COLS + ["conf_elo_diff"]
                 + [f"diff_{c}" for c in stat_cols]
                 + ([f"diff_{c}" for c in massey_cols] if len(massey_cols) else [])
             )
+            feature_names, selected_feature_indices = _resolve_feature_selection(
+                all_feature_names,
+                MODEL_FEATURE_SELECTION,
+            )
+            state.available_feature_names = all_feature_names
             state.feature_names = feature_names
+            state.selected_feature_indices = list(selected_feature_indices)
             state.massey_cols = massey_cols
             if is_men:
                 state.m_stat_cols = stat_cols
@@ -685,13 +924,13 @@ def train_prediction_model(
             w_elo = float(state.elo.get((prev, w_id), elo_cfg.init))
             l_elo = float(state.elo.get((prev, l_id), elo_cfg.init))
 
-            # Seeds from tournament season
-            w_seed = int(seed_map.get((season, w_id), 8))
-            l_seed = int(seed_map.get((season, l_id), 8))
+            # Seeds from tournament season (engineered notebook-style features)
+            w_seed_feats = _get_seed_features(seed_feature_map, season, w_id)
+            l_seed_feats = _get_seed_features(seed_feature_map, season, l_id)
 
-            # Prior-season boxscore averages
-            w_stats = _get_row_feats(stats_df, prev, w_id, stat_cols)
-            l_stats = _get_row_feats(stats_df, prev, l_id, stat_cols)
+            # Current-season boxscore averages from regular-season detailed data
+            w_stats = _get_row_feats(stats_df, season, w_id, stat_cols)
+            l_stats = _get_row_feats(stats_df, season, l_id, stat_cols)
 
             # Massey ranks (MEN ONLY): same season
             if is_men and massey_df is not None and len(massey_cols) > 0:
@@ -707,26 +946,32 @@ def train_prediction_model(
 
             # Convention: team1 = lower TeamID
             if w_id < l_id:
-                feats = [
+                full_feats = [
                     w_elo - l_elo,
-                    l_seed - w_seed,
+                    *_build_seed_matchup_features(w_seed_feats, l_seed_feats),
                     w_conf_elo - l_conf_elo,
                     *list(w_stats - l_stats),
                 ]
                 if len(massey_cols) > 0:
-                    feats += list(w_m - l_m)
+                    full_feats += list(w_m - l_m)
+                if selected_feature_indices is None:
+                    raise RuntimeError("Feature selection indices were not initialized.")
+                feats = [full_feats[i] for i in selected_feature_indices]
                 X.append(feats)
                 y.append(1)
                 season_groups.append(season)
             else:
-                feats = [
+                full_feats = [
                     l_elo - w_elo,
-                    w_seed - l_seed,
+                    *_build_seed_matchup_features(l_seed_feats, w_seed_feats),
                     l_conf_elo - w_conf_elo,
                     *list(l_stats - w_stats),
                 ]
                 if len(massey_cols) > 0:
-                    feats += list(l_m - w_m)
+                    full_feats += list(l_m - w_m)
+                if selected_feature_indices is None:
+                    raise RuntimeError("Feature selection indices were not initialized.")
+                feats = [full_feats[i] for i in selected_feature_indices]
                 X.append(feats)
                 y.append(0)
                 season_groups.append(season)
@@ -743,12 +988,21 @@ def train_prediction_model(
     resolved_model = _normalize_model_type(model_type)
     model, cv_model = _build_classifier(resolved_model)
 
+    if show_progress:
+        print(
+            "[train] fitting final model "
+            f"type={resolved_model} rows={len(y_vec)} features={x_mat.shape[1]}"
+        )
     model.fit(x_mat, y_vec)
 
     unique_seasons = np.unique(season_vec)
+    cv_verbose = 3 if show_progress else 0
+
     if len(unique_seasons) >= 2:
         n_splits = min(5, int(len(unique_seasons)))
         cv_strategy = f"groupkfold_season_{n_splits}"
+        if show_progress:
+            print(f"[train] cross-validation started strategy={cv_strategy}")
         cv_probs = cross_val_score(
             cv_model,
             x_mat,
@@ -756,20 +1010,26 @@ def train_prediction_model(
             scoring="neg_brier_score",
             cv=GroupKFold(n_splits=n_splits),
             groups=season_vec,
+            verbose=cv_verbose,
         )
     else:
         n_splits = min(5, int(len(y_vec)))
         if n_splits < 2:
             raise RuntimeError("Need at least 2 training rows for cross-validation.")
         cv_strategy = f"stratified_kfold_{n_splits}_fallback"
+        if show_progress:
+            print(f"[train] cross-validation started strategy={cv_strategy}")
         cv_probs = cross_val_score(
             cv_model,
             x_mat,
             y_vec,
             scoring="neg_brier_score",
             cv=n_splits,
+            verbose=cv_verbose,
         )
     brier = -cv_probs.mean()
+    if show_progress:
+        print(f"[train] average CV brier score={brier:.4f}")
 
     state.model = model
     summary: dict[str, Any] = {
@@ -781,6 +1041,8 @@ def train_prediction_model(
         "cv_strategy": cv_strategy,
         "cv_brier_score": f"{brier:.4f}",
         "num_features": int(x_mat.shape[1]),
+        "available_features": list(state.available_feature_names),
+        "selected_features": list(state.feature_names),
     }
 
     if resolved_model == "logistic":
@@ -825,10 +1087,10 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
 
     sub = state.data["sample_sub"].copy()
 
-    # Seed lookup for ALL seasons
-    seed_map = state.data.get("seed_map")
-    if not isinstance(seed_map, dict):
-        raise RuntimeError("Missing derived seed_map. Call build_complete_feature_map first.")
+    # Seed feature lookup for ALL seasons
+    seed_feature_map = state.data.get("seed_feature_map")
+    if not isinstance(seed_feature_map, dict):
+        raise RuntimeError("Missing derived seed_feature_map. Call build_complete_feature_map first.")
 
     m_team_ids = set(state.data["m_teams"]["TeamID"].astype(int).tolist())
     w_team_ids = set(state.data["w_teams"]["TeamID"].astype(int).tolist())
@@ -839,6 +1101,10 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
     if state.massey_cols is None:
         # allow [] meaning "no massey features", but None means "not initialized"
         raise RuntimeError("Missing state.massey_cols. Ensure train_prediction_model sets it (possibly to []).")
+    if not state.selected_feature_indices:
+        raise RuntimeError(
+            "Missing state.selected_feature_indices. Ensure train_prediction_model was run."
+        )
 
     massey_df = state.data.get("m_massey_feats")
     massey_cols = list(state.massey_cols)  # fixed order from training
@@ -866,11 +1132,11 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
 
         e1 = float(state.elo.get((prev, t1), elo_cfg.init))
         e2 = float(state.elo.get((prev, t2), elo_cfg.init))
-        s1 = int(seed_map.get((season, t1), 8))
-        s2 = int(seed_map.get((season, t2), 8))
+        t1_seed_feats = _get_seed_features(seed_feature_map, season, t1)
+        t2_seed_feats = _get_seed_features(seed_feature_map, season, t2)
 
-        t1_stats = _get_row_feats(stats_df, prev, t1, stat_cols)
-        t2_stats = _get_row_feats(stats_df, prev, t2, stat_cols)
+        t1_stats = _get_row_feats(stats_df, season, t1, stat_cols)
+        t2_stats = _get_row_feats(stats_df, season, t2, stat_cols)
 
         # Conference Elo
         t1_conf = float(_get_row_feats(conf_df, prev, t1, ["conf_elo"])[0])
@@ -884,14 +1150,16 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
             t1_m = np.zeros(len(massey_cols), dtype=float)
             t2_m = np.zeros(len(massey_cols), dtype=float)
 
-        feats = [
+        full_feats = [
             e1 - e2,
-            s2 - s1,
+            *_build_seed_matchup_features(t1_seed_feats, t2_seed_feats),
             t1_conf - t2_conf,
             *list(t1_stats - t2_stats),
         ]
         if len(massey_cols) > 0:
-            feats += list(t1_m - t2_m)
+            full_feats += list(t1_m - t2_m)
+
+        feats = [full_feats[i] for i in state.selected_feature_indices]
 
         features = np.asarray([feats], dtype=float)
 

@@ -1,0 +1,98 @@
+{
+  "search": {
+    "method": "forward_selection",
+    "prediction_model": "catboost",
+    "min_improvement": 0.0001,
+    "max_features": 15,
+    "required_features": [
+      "elo_diff",
+      "conf_elo_diff"
+    ],
+    "candidate_count": 7,
+    "evaluations": 16,
+    "elapsed_sec": 79.589
+  },
+  "best": {
+    "cv_brier": 0.1776,
+    "subset_size": 6,
+    "subset": [
+      "elo_diff",
+      "conf_elo_diff",
+      "Seed_Num_Ratio",
+      "diff_stat_efg_pct",
+      "diff_stat_ft_rate",
+      "Seed_Value_Diff"
+    ]
+  },
+  "history": [
+    {
+      "step": 0,
+      "action": "init_required",
+      "feature": null,
+      "subset_size": 2,
+      "cv_brier": 0.1915,
+      "subset": [
+        "elo_diff",
+        "conf_elo_diff"
+      ]
+    },
+    {
+      "step": 1,
+      "action": "add",
+      "feature": "Seed_Num_Ratio",
+      "subset_size": 3,
+      "cv_brier": 0.1785,
+      "improvement": 0.013000000000000012,
+      "subset": [
+        "elo_diff",
+        "conf_elo_diff",
+        "Seed_Num_Ratio"
+      ]
+    },
+    {
+      "step": 2,
+      "action": "add",
+      "feature": "diff_stat_efg_pct",
+      "subset_size": 4,
+      "cv_brier": 0.1783,
+      "improvement": 0.00020000000000000573,
+      "subset": [
+        "elo_diff",
+        "conf_elo_diff",
+        "Seed_Num_Ratio",
+        "diff_stat_efg_pct"
+      ]
+    },
+    {
+      "step": 3,
+      "action": "add",
+      "feature": "diff_stat_ft_rate",
+      "subset_size": 5,
+      "cv_brier": 0.1781,
+      "improvement": 0.00019999999999997797,
+      "subset": [
+        "elo_diff",
+        "conf_elo_diff",
+        "Seed_Num_Ratio",
+        "diff_stat_efg_pct",
+        "diff_stat_ft_rate"
+      ]
+    },
+    {
+      "step": 4,
+      "action": "add",
+      "feature": "Seed_Value_Diff",
+      "subset_size": 6,
+      "cv_brier": 0.1776,
+      "improvement": 0.0005000000000000004,
+      "subset": [
+        "elo_diff",
+        "conf_elo_diff",
+        "Seed_Num_Ratio",
+        "diff_stat_efg_pct",
+        "diff_stat_ft_rate",
+        "Seed_Value_Diff"
+      ]
+    }
+  ]
+}
