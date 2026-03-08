@@ -9,26 +9,28 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GroupKFold, cross_val_score
+from sklearn.base import BaseEstimator, clone
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import brier_score_loss, mean_absolute_error
+from sklearn.model_selection import GroupKFold, KFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 try:
-    from xgboost import XGBClassifier
+    from xgboost import XGBRegressor
 except ImportError:  # pragma: no cover - optional dependency
-    XGBClassifier = None
+    XGBRegressor = None
 
 try:
-    from lightgbm import LGBMClassifier
+    from lightgbm import LGBMRegressor
 except ImportError:  # pragma: no cover - optional dependency
-    LGBMClassifier = None
+    LGBMRegressor = None
 
 try:
-    from catboost import CatBoostClassifier
+    from catboost import CatBoostRegressor
 except ImportError:  # pragma: no cover - optional dependency
-    CatBoostClassifier = None
+    CatBoostRegressor = None
 
 from .config import EloConfig
 
@@ -38,6 +40,7 @@ class PipelineState:
     data: dict[str, pd.DataFrame] = field(default_factory=dict)
     elo: dict[tuple[int, int], float] = field(default_factory=dict)
     model: BaseEstimator | None = None
+    margin_calibrator: IsotonicRegression | None = None
 
     # Saved so Tool 4 can build the identical feature vector order as Tool 3
     feature_names: list[str] = field(default_factory=list)
@@ -97,42 +100,42 @@ SEED_MATCHUP_FEATURE_COLS = [
 ]
 MODEL_FEATURE_SELECTION = [
     "elo_diff",
-    # "Seed_Num_Diff",
+    "Seed_Num_Diff",
     "Seed_Strength_Diff",
     "Seed_Value_Diff",
     "Seed_Num_Ratio",
-    # "Seed_Strength_Ratio",
-    # "Seed_Value_Ratio",
-    # "Seed_Num_Product",
-    # "Seed_Strength_Product",
-    # "Seed_Sum",
-    # "Same_Tier_Elite",
-    # "Same_Tier_Low",
-    # "Tier_Gap",
+    "Seed_Strength_Ratio",
+    "Seed_Value_Ratio",
+    "Seed_Num_Product",
+    "Seed_Strength_Product",
+    "Seed_Sum",
+    "Same_Tier_Elite",
+    "Same_Tier_Low",
+    "Tier_Gap",
     "conf_elo_diff",
-    # "diff_stat_ast",
-    # "diff_stat_blk",
-    # "diff_stat_dr",
+    "diff_stat_ast",
+    "diff_stat_blk",
+    "diff_stat_dr",
     "diff_stat_efg_pct",
-    # "diff_stat_fg3_pct",
-    # "diff_stat_fg_pct",
-    # "diff_stat_ft_pct",
+    "diff_stat_fg3_pct",
+    "diff_stat_fg_pct",
+    "diff_stat_ft_pct",
     "diff_stat_ft_rate",
-    # "diff_stat_or",
-    # "diff_stat_orb_pct",
-    # "diff_stat_pf",
-    # "diff_stat_stl",
-    # "diff_stat_to",
-    # "diff_stat_tov_pct",
-    # "diff_stat_tr",
-    # "diff_massey_mean",
-    # "diff_massey_pom",
-    # "diff_massey_rpi",
-    # "diff_massey_sag",
+    "diff_stat_or",
+    "diff_stat_orb_pct",
+    "diff_stat_pf",
+    "diff_stat_stl",
+    "diff_stat_to",
+    "diff_stat_tov_pct",
+    "diff_stat_tr",
+    "diff_massey_mean",
+    "diff_massey_pom",
+    "diff_massey_rpi",
+    "diff_massey_sag",
 ]
 PREDICTION_MODEL_ALIASES = {
-    "linear": "logistic",
-    "logistic": "logistic",
+    "linear": "linear",
+    "logistic": "linear",
     "boosting": "boosting",
     "xgb": "xgboost",
     "xgboost": "xgboost",
@@ -157,29 +160,29 @@ def _require_optional_model(name: str, model_cls: Any, install_hint: str) -> Non
     raise RuntimeError(f"{name} is not installed. Install it first, e.g. `{install_hint}`.")
 
 
-def _build_classifier(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
-    if model_type == "logistic":
+def _build_regressor(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
+    if model_type == "linear":
         return (
             make_pipeline(
                 StandardScaler(),
-                LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000),
+                LinearRegression(),
             ),
             make_pipeline(
                 StandardScaler(),
-                LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000),
+                LinearRegression(),
             ),
         )
 
     if model_type == "boosting":
         return (
-            GradientBoostingClassifier(
+            GradientBoostingRegressor(
                 n_estimators=300,
                 learning_rate=0.05,
                 max_depth=3,
                 subsample=0.8,
                 random_state=42,
             ),
-            GradientBoostingClassifier(
+            GradientBoostingRegressor(
                 n_estimators=300,
                 learning_rate=0.05,
                 max_depth=3,
@@ -189,38 +192,36 @@ def _build_classifier(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
         )
 
     if model_type == "xgboost":
-        _require_optional_model("XGBoost", XGBClassifier, "pip install xgboost")
+        _require_optional_model("XGBoost", XGBRegressor, "pip install xgboost")
         return (
-            XGBClassifier(
+            XGBRegressor(
                 n_estimators=400,
                 learning_rate=0.05,
                 max_depth=4,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 reg_lambda=1.0,
-                objective="binary:logistic",
-                eval_metric="logloss",
+                objective="reg:squarederror",
                 random_state=42,
                 n_jobs=-1,
             ),
-            XGBClassifier(
+            XGBRegressor(
                 n_estimators=400,
                 learning_rate=0.05,
                 max_depth=4,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 reg_lambda=1.0,
-                objective="binary:logistic",
-                eval_metric="logloss",
+                objective="reg:squarederror",
                 random_state=42,
                 n_jobs=-1,
             ),
         )
 
     if model_type == "lightgbm":
-        _require_optional_model("LightGBM", LGBMClassifier, "pip install lightgbm")
+        _require_optional_model("LightGBM", LGBMRegressor, "pip install lightgbm")
         return (
-            LGBMClassifier(
+            LGBMRegressor(
                 n_estimators=400,
                 learning_rate=0.05,
                 num_leaves=31,
@@ -229,7 +230,7 @@ def _build_classifier(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
                 colsample_bytree=0.8,
                 random_state=42,
             ),
-            LGBMClassifier(
+            LGBMRegressor(
                 n_estimators=400,
                 learning_rate=0.05,
                 num_leaves=31,
@@ -241,23 +242,21 @@ def _build_classifier(model_type: str) -> tuple[BaseEstimator, BaseEstimator]:
         )
 
     if model_type == "catboost":
-        _require_optional_model("CatBoost", CatBoostClassifier, "pip install catboost")
+        _require_optional_model("CatBoost", CatBoostRegressor, "pip install catboost")
         return (
-            CatBoostClassifier(
+            CatBoostRegressor(
                 iterations=500,
                 learning_rate=0.05,
                 depth=6,
-                loss_function="Logloss",
-                eval_metric="Logloss",
+                loss_function="RMSE",
                 random_seed=42,
                 verbose=False,
             ),
-            CatBoostClassifier(
+            CatBoostRegressor(
                 iterations=500,
                 learning_rate=0.05,
                 depth=6,
-                loss_function="Logloss",
-                eval_metric="Logloss",
+                loss_function="RMSE",
                 random_seed=42,
                 verbose=False,
             ),
@@ -847,7 +846,7 @@ def _ensure_derived_feature_tables(state: PipelineState, elo_cfg: EloConfig) -> 
 
 
 # ══════════════════════════════
-# TOOL 3: Train prediction model (Elo + Seed + ConfElo + Boxscores + Massey)
+# TOOL 3: Train prediction model (point margin regression + margin->probability mapping)
 # ══════════════════════════════
 
 def train_prediction_model(
@@ -873,7 +872,7 @@ def train_prediction_model(
     massey_cols = sorted(massey_cols)
 
     X: list[list[float]] = []
-    y: list[int] = []
+    y_margin: list[float] = []
     season_groups: list[int] = []
     feature_names: list[str] | None = None
     selected_feature_indices: list[int] | None = None
@@ -945,6 +944,7 @@ def train_prediction_model(
             l_conf_elo = float(_get_row_feats(conf_df, prev, l_id, ["conf_elo"])[0])
 
             # Convention: team1 = lower TeamID
+            margin = float(row["WScore"]) - float(row["LScore"])
             if w_id < l_id:
                 full_feats = [
                     w_elo - l_elo,
@@ -958,7 +958,7 @@ def train_prediction_model(
                     raise RuntimeError("Feature selection indices were not initialized.")
                 feats = [full_feats[i] for i in selected_feature_indices]
                 X.append(feats)
-                y.append(1)
+                y_margin.append(margin)
                 season_groups.append(season)
             else:
                 full_feats = [
@@ -973,11 +973,11 @@ def train_prediction_model(
                     raise RuntimeError("Feature selection indices were not initialized.")
                 feats = [full_feats[i] for i in selected_feature_indices]
                 X.append(feats)
-                y.append(0)
+                y_margin.append(-margin)
                 season_groups.append(season)
 
     x_mat = np.asarray(X, dtype=float)
-    y_vec = np.asarray(y, dtype=int)
+    y_vec = np.asarray(y_margin, dtype=float)
     season_vec = np.asarray(season_groups, dtype=int)
     x_mat = np.nan_to_num(x_mat, nan=0.0, posinf=0.0, neginf=0.0)
     if len(y_vec) == 0:
@@ -986,7 +986,7 @@ def train_prediction_model(
         raise RuntimeError("Season group length mismatch while building training rows.")
 
     resolved_model = _normalize_model_type(model_type)
-    model, cv_model = _build_classifier(resolved_model)
+    model, cv_model = _build_regressor(resolved_model)
 
     if show_progress:
         print(
@@ -996,63 +996,66 @@ def train_prediction_model(
     model.fit(x_mat, y_vec)
 
     unique_seasons = np.unique(season_vec)
-    cv_verbose = 3 if show_progress else 0
 
     if len(unique_seasons) >= 2:
         n_splits = min(5, int(len(unique_seasons)))
         cv_strategy = f"groupkfold_season_{n_splits}"
         if show_progress:
             print(f"[train] cross-validation started strategy={cv_strategy}")
-        cv_probs = cross_val_score(
-            cv_model,
-            x_mat,
-            y_vec,
-            scoring="neg_brier_score",
-            cv=GroupKFold(n_splits=n_splits),
-            groups=season_vec,
-            verbose=cv_verbose,
-        )
+        cv = GroupKFold(n_splits=n_splits)
+        splits = list(cv.split(x_mat, y_vec, groups=season_vec))
     else:
         n_splits = min(5, int(len(y_vec)))
         if n_splits < 2:
             raise RuntimeError("Need at least 2 training rows for cross-validation.")
-        cv_strategy = f"stratified_kfold_{n_splits}_fallback"
+        cv_strategy = f"kfold_{n_splits}_fallback"
         if show_progress:
             print(f"[train] cross-validation started strategy={cv_strategy}")
-        cv_probs = cross_val_score(
-            cv_model,
-            x_mat,
-            y_vec,
-            scoring="neg_brier_score",
-            cv=n_splits,
-            verbose=cv_verbose,
-        )
-    brier = -cv_probs.mean()
+        cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        splits = list(cv.split(x_mat, y_vec))
+
+    oof_margin_pred = np.zeros(len(y_vec), dtype=float)
+    for train_idx, val_idx in splits:
+        fold_model = clone(cv_model)
+        fold_model.fit(x_mat[train_idx], y_vec[train_idx])
+        oof_margin_pred[val_idx] = fold_model.predict(x_mat[val_idx])
+
+    win_labels = (y_vec > 0.0).astype(int)
+    calibrator = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds="clip")
+    calibrator.fit(oof_margin_pred, win_labels)
+    oof_probs = np.asarray(calibrator.predict(oof_margin_pred), dtype=float)
+    oof_probs = np.clip(oof_probs, 0.01, 0.99)
+
+    mae = mean_absolute_error(y_vec, oof_margin_pred)
+    brier = brier_score_loss(win_labels, oof_probs)
     if show_progress:
+        print(f"[train] average CV margin MAE={mae:.4f}")
         print(f"[train] average CV brier score={brier:.4f}")
 
     state.model = model
+    state.margin_calibrator = calibrator
     summary: dict[str, Any] = {
         "status": "success",
         "model_type": resolved_model,
         "training_games": int(len(y_vec)),
         "training_seasons": int(len(unique_seasons)),
-        "win_rate_label1": f"{y_vec.mean():.3f}",
+        "win_rate_label1": f"{win_labels.mean():.3f}",
         "cv_strategy": cv_strategy,
+        "cv_margin_mae": f"{mae:.4f}",
         "cv_brier_score": f"{brier:.4f}",
         "num_features": int(x_mat.shape[1]),
         "available_features": list(state.available_feature_names),
         "selected_features": list(state.feature_names),
     }
 
-    if resolved_model == "logistic":
-        lr = model.named_steps["logisticregression"]
+    if resolved_model == "linear":
+        lr = model.named_steps["linearregression"]
         coef_map = {
             name: float(val)
-            for name, val in zip(state.feature_names, lr.coef_[0], strict=True)
+            for name, val in zip(state.feature_names, lr.coef_, strict=True)
         }
         summary["coefficients"] = {k: f"{v:.6f}" for k, v in coef_map.items()}
-        summary["intercept"] = f"{float(lr.intercept_[0]):.6f}"
+        summary["intercept"] = f"{float(lr.intercept_):.6f}"
     else:
         importances = {
             name: float(val)
@@ -1070,7 +1073,8 @@ def train_prediction_model(
         summary["feature_importances"] = {k: f"{v:.6f}" for k, v in top_importances}
 
     summary["message"] = (
-        f"Model ({resolved_model}) trained on {len(y_vec)} games. CV Brier: {brier:.4f}"
+        "Point-margin model "
+        f"({resolved_model}) trained on {len(y_vec)} games. CV MAE: {mae:.4f}, CV Brier: {brier:.4f}"
     )
     return summary
 
@@ -1082,6 +1086,8 @@ def train_prediction_model(
 def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: EloConfig) -> dict[str, Any]:
     if state.model is None:
         raise RuntimeError("Model not trained. Call train_prediction_model first.")
+    if state.margin_calibrator is None:
+        raise RuntimeError("Margin calibrator not available. Call train_prediction_model first.")
 
     _ensure_derived_feature_tables(state, elo_cfg)
 
@@ -1172,7 +1178,8 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
             if features.shape[1] != expected:
                 raise RuntimeError(f"Feature length mismatch: got {features.shape[1]} expected {expected}")
 
-        prob = float(state.model.predict_proba(features)[0][1])
+        margin_pred = float(state.model.predict(features)[0])
+        prob = float(state.margin_calibrator.predict([margin_pred])[0])
         preds.append(float(np.clip(prob, 0.01, 0.99)))
 
     sub["Pred"] = preds
