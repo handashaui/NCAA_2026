@@ -215,8 +215,11 @@ def _check_feature_vectors(state: PipelineState, elo_cfg: EloConfig, n_show: int
         for name, val in named[:12]:
             print(f"  {name:28s} {val: .6f}")
 
-        prob = float(state.model.predict_proba(x.reshape(1, -1))[0][1])
-        print(f"Model P(team1 wins)={prob:.4f}")
+        margin_pred = float(state.model.predict(x.reshape(1, -1))[0])
+        if state.margin_calibrator is None:
+            raise RuntimeError("margin_calibrator not initialized by train_prediction_model.")
+        prob = float(state.margin_calibrator.predict([margin_pred])[0])
+        print(f"Model predicted margin={margin_pred:.3f}  P(team1 wins)={prob:.4f}")
 
 
 def main() -> None:
