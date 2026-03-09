@@ -16,6 +16,7 @@ from .tools import (
     build_complete_feature_map,
     train_prediction_model,
     _ensure_derived_feature_tables,
+    _build_matchup_feature_values,
     _get_row_feats,
 )
 from .config import EloConfig
@@ -189,14 +190,38 @@ def _check_feature_vectors(state: PipelineState, elo_cfg: EloConfig, n_show: int
             t1_m = np.zeros(len(massey_cols), dtype=float)
             t2_m = np.zeros(len(massey_cols), dtype=float)
 
-        feats = [
-            e1 - e2,
-            s2 - s1,
-            t1_conf - t2_conf,
-            *list(t1_stats - t2_stats),
-        ]
-        if len(massey_cols) > 0:
-            feats += list(t1_m - t2_m)
+        feats = _build_matchup_feature_values(
+            t1_elo=e1,
+            t2_elo=e2,
+            t1_seed_feats={
+                "Seed_Num": float(s1),
+                "Seed_Strength": 17.0 - float(s1),
+                "Seed_Tier_Elite": float(s1 <= 4),
+                "Seed_Tier_Contender": float(5 <= s1 <= 8),
+                "Seed_Tier_Mid": float(9 <= s1 <= 12),
+                "Seed_Tier_Low": float(s1 >= 13),
+                "Seed_Value": 1.0 / float(s1),
+                "Seed_Squared": float(s1**2),
+                "Seed_Percentile": (17.0 - float(s1)) / 16.0,
+            },
+            t2_seed_feats={
+                "Seed_Num": float(s2),
+                "Seed_Strength": 17.0 - float(s2),
+                "Seed_Tier_Elite": float(s2 <= 4),
+                "Seed_Tier_Contender": float(5 <= s2 <= 8),
+                "Seed_Tier_Mid": float(9 <= s2 <= 12),
+                "Seed_Tier_Low": float(s2 >= 13),
+                "Seed_Value": 1.0 / float(s2),
+                "Seed_Squared": float(s2**2),
+                "Seed_Percentile": (17.0 - float(s2)) / 16.0,
+            },
+            t1_conf_elo=t1_conf,
+            t2_conf_elo=t2_conf,
+            t1_stats=t1_stats,
+            t2_stats=t2_stats,
+            t1_massey=t1_m,
+            t2_massey=t2_m,
+        )
 
         x = np.asarray(feats, dtype=float)
         x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)

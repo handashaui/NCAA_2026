@@ -99,6 +99,7 @@ SEED_MATCHUP_FEATURE_COLS = [
     "Tier_Gap",
 ]
 MODEL_FEATURE_SELECTION = [
+    # Existing interaction features
     "elo_diff",
     "Seed_Num_Diff",
     "Seed_Strength_Diff",
@@ -132,6 +133,27 @@ MODEL_FEATURE_SELECTION = [
     "diff_massey_pom",
     "diff_massey_rpi",
     "diff_massey_sag",
+    # Added per-team features
+    "elo_t1",
+    "elo_t2",
+    "seed_t1_seed_num",
+    "seed_t2_seed_num",
+    "seed_t1_seed_strength",
+    "seed_t2_seed_strength",
+    "seed_t1_seed_value",
+    "seed_t2_seed_value",
+    "conf_elo_t1",
+    "conf_elo_t2",
+    "t1_stat_efg_pct",
+    "t2_stat_efg_pct",
+    "t1_stat_ft_rate",
+    "t2_stat_ft_rate",
+    "t1_stat_orb_pct",
+    "t2_stat_orb_pct",
+    "t1_stat_tov_pct",
+    "t2_stat_tov_pct",
+    "t1_massey_mean",
+    "t2_massey_mean",
 ]
 PREDICTION_MODEL_ALIASES = {
     "linear": "linear",
@@ -357,6 +379,68 @@ def _build_seed_matchup_features(
         float((t1_low == 1.0) and (t2_low == 1.0)),
         abs(t1_elite - t2_elite),
     ]
+
+
+def _build_all_feature_names(stat_cols: list[str], massey_cols: list[str]) -> list[str]:
+    """Canonical ordered feature names for train/inference."""
+    team_seed_names = [f"seed_t1_{c.lower()}" for c in SEED_FEATURE_COLS] + [
+        f"seed_t2_{c.lower()}" for c in SEED_FEATURE_COLS
+    ]
+    team_stat_names = [f"t1_{c}" for c in stat_cols] + [f"t2_{c}" for c in stat_cols]
+    team_massey_names = [f"t1_{c}" for c in massey_cols] + [f"t2_{c}" for c in massey_cols]
+
+    return (
+        ["elo_t1", "elo_t2", "elo_diff"]
+        + team_seed_names
+        + SEED_MATCHUP_FEATURE_COLS
+        + ["conf_elo_t1", "conf_elo_t2", "conf_elo_diff"]
+        + team_stat_names
+        + [f"diff_{c}" for c in stat_cols]
+        + team_massey_names
+        + [f"diff_{c}" for c in massey_cols]
+    )
+
+
+def _build_matchup_feature_values(
+    t1_elo: float,
+    t2_elo: float,
+    t1_seed_feats: dict[str, float],
+    t2_seed_feats: dict[str, float],
+    t1_conf_elo: float,
+    t2_conf_elo: float,
+    t1_stats: np.ndarray,
+    t2_stats: np.ndarray,
+    t1_massey: np.ndarray,
+    t2_massey: np.ndarray,
+) -> list[float]:
+    """Feature values matching _build_all_feature_names order."""
+    t1_seed_vals = [float(t1_seed_feats[c]) for c in SEED_FEATURE_COLS]
+    t2_seed_vals = [float(t2_seed_feats[c]) for c in SEED_FEATURE_COLS]
+    seed_matchup_vals = _build_seed_matchup_features(t1_seed_feats, t2_seed_feats)
+
+    out = [
+        float(t1_elo),
+        float(t2_elo),
+        float(t1_elo - t2_elo),
+        *t1_seed_vals,
+        *t2_seed_vals,
+        *seed_matchup_vals,
+        float(t1_conf_elo),
+        float(t2_conf_elo),
+        float(t1_conf_elo - t2_conf_elo),
+        *list(t1_stats.astype(float)),
+        *list(t2_stats.astype(float)),
+        *list((t1_stats - t2_stats).astype(float)),
+    ]
+
+    if len(t1_massey) > 0:
+        out += [
+            *list(t1_massey.astype(float)),
+            *list(t2_massey.astype(float)),
+            *list((t1_massey - t2_massey).astype(float)),
+        ]
+
+    return out
 
 
 def _resolve_feature_selection(
@@ -887,11 +971,7 @@ def train_prediction_model(
 
         # Define feature names once (exact order)
         if feature_names is None:
-            all_feature_names = (
-                ["elo_diff"] + SEED_MATCHUP_FEATURE_COLS + ["conf_elo_diff"]
-                + [f"diff_{c}" for c in stat_cols]
-                + ([f"diff_{c}" for c in massey_cols] if len(massey_cols) else [])
-            )
+            all_feature_names = _build_all_feature_names(stat_cols, massey_cols)
             feature_names, selected_feature_indices = _resolve_feature_selection(
                 all_feature_names,
                 MODEL_FEATURE_SELECTION,
@@ -943,37 +1023,37 @@ def train_prediction_model(
             w_conf_elo = float(_get_row_feats(conf_df, prev, w_id, ["conf_elo"])[0])
             l_conf_elo = float(_get_row_feats(conf_df, prev, l_id, ["conf_elo"])[0])
 
-            # Convention: team1 = lower TeamID
+            # Symmetric augmentation:
+            # add both orientations for each game (winner-loser and loser-winner).
             margin = float(row["WScore"]) - float(row["LScore"])
-            if w_id < l_id:
-                full_feats = [
-                    w_elo - l_elo,
-                    *_build_seed_matchup_features(w_seed_feats, l_seed_feats),
-                    w_conf_elo - l_conf_elo,
-                    *list(w_stats - l_stats),
-                ]
-                if len(massey_cols) > 0:
-                    full_feats += list(w_m - l_m)
+
+            team_elo = {w_id: w_elo, l_id: l_elo}
+            team_seed = {w_id: w_seed_feats, l_id: l_seed_feats}
+            team_stats = {w_id: w_stats, l_id: l_stats}
+            team_conf = {w_id: w_conf_elo, l_id: l_conf_elo}
+            team_massey = {w_id: w_m, l_id: l_m}
+
+            for t1_id, t2_id, target_margin in (
+                (w_id, l_id, margin),
+                (l_id, w_id, -margin),
+            ):
+                full_feats = _build_matchup_feature_values(
+                    t1_elo=team_elo[t1_id],
+                    t2_elo=team_elo[t2_id],
+                    t1_seed_feats=team_seed[t1_id],
+                    t2_seed_feats=team_seed[t2_id],
+                    t1_conf_elo=team_conf[t1_id],
+                    t2_conf_elo=team_conf[t2_id],
+                    t1_stats=team_stats[t1_id],
+                    t2_stats=team_stats[t2_id],
+                    t1_massey=team_massey[t1_id],
+                    t2_massey=team_massey[t2_id],
+                )
                 if selected_feature_indices is None:
                     raise RuntimeError("Feature selection indices were not initialized.")
                 feats = [full_feats[i] for i in selected_feature_indices]
                 X.append(feats)
-                y_margin.append(margin)
-                season_groups.append(season)
-            else:
-                full_feats = [
-                    l_elo - w_elo,
-                    *_build_seed_matchup_features(l_seed_feats, w_seed_feats),
-                    l_conf_elo - w_conf_elo,
-                    *list(l_stats - w_stats),
-                ]
-                if len(massey_cols) > 0:
-                    full_feats += list(l_m - w_m)
-                if selected_feature_indices is None:
-                    raise RuntimeError("Feature selection indices were not initialized.")
-                feats = [full_feats[i] for i in selected_feature_indices]
-                X.append(feats)
-                y_margin.append(-margin)
+                y_margin.append(target_margin)
                 season_groups.append(season)
 
     x_mat = np.asarray(X, dtype=float)
@@ -1156,14 +1236,18 @@ def generate_submission(state: PipelineState, output_path: str | Path, elo_cfg: 
             t1_m = np.zeros(len(massey_cols), dtype=float)
             t2_m = np.zeros(len(massey_cols), dtype=float)
 
-        full_feats = [
-            e1 - e2,
-            *_build_seed_matchup_features(t1_seed_feats, t2_seed_feats),
-            t1_conf - t2_conf,
-            *list(t1_stats - t2_stats),
-        ]
-        if len(massey_cols) > 0:
-            full_feats += list(t1_m - t2_m)
+        full_feats = _build_matchup_feature_values(
+            t1_elo=e1,
+            t2_elo=e2,
+            t1_seed_feats=t1_seed_feats,
+            t2_seed_feats=t2_seed_feats,
+            t1_conf_elo=t1_conf,
+            t2_conf_elo=t2_conf,
+            t1_stats=t1_stats,
+            t2_stats=t2_stats,
+            t1_massey=t1_m,
+            t2_massey=t2_m,
+        )
 
         feats = [full_feats[i] for i in state.selected_feature_indices]
 
