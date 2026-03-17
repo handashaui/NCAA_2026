@@ -1,12 +1,21 @@
-# March Machine Learning Mania 2026 - ADK Starter
+# March Machine Learning Mania 2026 Baseline Model
 
-This repo is a clean starter based on the ADK notebook baseline:
+This repo is a locally reproducible experimentation repository for Kaggle March Machine Learning Mania 2026
+ based on the ADK notebook baseline:
 - Data Loader Agent
 - Feature Engineer Agent (Elo)
 - Model Trainer Agent (Logistic Regression or Boosting)
 - Submission Agent
 
 The agents are orchestrated with `SequentialAgent` from Google ADK.
+
+## What This Repo Does
+
+- Loads official competition data (regular season, tournament, seeds, Massey ratings, conference data, etc.)
+- Builds a unified feature pipeline (Elo, seed, team efficiency, recent form, box score stats, Massey, optional coach features)
+- Trains prediction models (default: XGBoost margin model with probability calibration)
+- Generates competition submission files (`ID, Pred`)
+- Supports walk-forward style local evaluation and feature ablation analysis
 
 ## Project Layout
 
